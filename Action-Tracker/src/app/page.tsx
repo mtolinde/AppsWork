@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Button } from "@/app/components/ui/button"
 import { Input } from "@/app/components/ui/input"
 import { Label } from "@/app/components/ui/label"
@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/ca
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/app/components/ui/table"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/app/components/ui/select"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/app/components/ui/dialog"
-import { AlertTriangle, Pencil, Check, X, Search, Download, Upload } from 'lucide-react'
+import { AlertTriangle, Pencil, Check, X, Search, Download, Upload, ArrowUpDown } from 'lucide-react'
 
 interface EntryData {
   id: string
@@ -239,7 +239,7 @@ function EditEntryDialog({ entry, onSave, onClose }: { entry: EntryData, onSave:
                       <SelectTrigger>
                         <SelectValue placeholder="Select who's action" />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="bg-white">
                         <SelectItem value="Me">Me</SelectItem>
                         <SelectItem value="Customer">Customer</SelectItem>
                         <SelectItem value="BU">BU</SelectItem>
@@ -256,7 +256,7 @@ function EditEntryDialog({ entry, onSave, onClose }: { entry: EntryData, onSave:
                       <SelectTrigger>
                         <SelectValue placeholder="Select action category" />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="bg-white">
                         {actionCategories.map((category) => (
                           <SelectItem key={category} value={category}>{category}</SelectItem>
                         ))}
@@ -295,6 +295,8 @@ function EditEntryDialog({ entry, onSave, onClose }: { entry: EntryData, onSave:
 function DataEntryList({ entries, setEntries }: { entries: EntryData[], setEntries: React.Dispatch<React.SetStateAction<EntryData[]>> }) {
   const [editingEntry, setEditingEntry] = useState<EntryData | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
+  const [whosActionFilter, setWhosActionFilter] = useState<'All' | 'Me' | 'Customer' | 'BU' | 'TSR'>('All')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
 
   const handleCellEdit = (id: string, key: keyof EntryData, value: string) => {
     setEntries(prev => prev.map(entry => 
@@ -313,27 +315,63 @@ function DataEntryList({ entries, setEntries }: { entries: EntryData[], setEntri
     setEditingEntry(null)
   }
 
-  const filteredEntries = entries.filter(entry =>
-    entry.account.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+  const handleDeleteEntry = (id: string) => {
+    if (window.confirm('Are you sure you want to delete this entry?')) {
+      setEntries(prev => prev.filter(entry => entry.id !== id))
+    }
+  }
+
+  const filteredAndSortedEntries = useMemo(() => {
+    return entries
+      .filter(entry =>
+        entry.account.toLowerCase().includes(searchTerm.toLowerCase()) &&
+        (whosActionFilter === 'All' || entry.whosAction === whosActionFilter)
+      )
+      .sort((a, b) => {
+        const daysA = calculateDaysSinceAction(a.lastContactDate)
+        const daysB = calculateDaysSinceAction(b.lastContactDate)
+        return sortOrder === 'asc' ? daysA - daysB : daysB - daysA
+      })
+  }, [entries, searchTerm, whosActionFilter, sortOrder])
+
+  const toggleSortOrder = () => {
+    setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+  }
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Current Data Entries</CardTitle>
-        <div className="flex items-center space-x-2">
-          <Search className="w-4 h-4 text-gray-500" />
-          <Input
-            type="text"
-            placeholder="Search by account name"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="max-w-sm"
-          />
+        <div className="flex flex-col space-y-4 md:flex-row md:items-center md:space-x-4 md:space-y-0">
+          <div className="flex items-center space-x-2">
+            <Search className="w-4 h-4 text-gray-500" />
+            <Input
+              type="text"
+              placeholder="Search by account name"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="max-w-sm"
+            />
+          </div>
+          <div className="flex items-center space-x-2">
+            <Label htmlFor="whosActionFilter">Filter by Who's Action:</Label>
+            <Select value={whosActionFilter} onValueChange={(value) => setWhosActionFilter(value as typeof whosActionFilter)}>
+              <SelectTrigger id="whosActionFilter" className="w-[180px]">
+                <SelectValue placeholder="Select filter" />
+              </SelectTrigger>
+              <SelectContent className="bg-white">
+                <SelectItem value="All">All</SelectItem>
+                <SelectItem value="Me">Me</SelectItem>
+                <SelectItem value="Customer">Customer</SelectItem>
+                <SelectItem value="BU">BU</SelectItem>
+                <SelectItem value="TSR">TSR</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
-        {filteredEntries.length > 0 ? (
+        {filteredAndSortedEntries.length > 0 ? (
           <Table>
             <TableHeader>
               <TableRow>
@@ -344,12 +382,17 @@ function DataEntryList({ entries, setEntries }: { entries: EntryData[], setEntri
                 <TableHead>Estimated Design Window</TableHead>
                 <TableHead>Who's Action</TableHead>
                 <TableHead>Action Category</TableHead>
-                <TableHead>Days Since Action</TableHead>
-                <TableHead>Edit</TableHead>
+                <TableHead>
+                  <Button variant="ghost" onClick={toggleSortOrder} className="flex items-center">
+                    Days Since Action
+                    <ArrowUpDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </TableHead>
+                <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredEntries.map((entry) => (
+              {filteredAndSortedEntries.map((entry) => (
                 <TableRow key={entry.id}>
                   <TableCell>{entry.account}</TableCell>
                   <TableCell>{entry.contactName}</TableCell>
@@ -378,7 +421,10 @@ function DataEntryList({ entries, setEntries }: { entries: EntryData[], setEntri
                     />
                   </TableCell>
                   <TableCell>
-                    <Button size="sm" variant="secondary" onClick={() => handleEditEntry(entry)}>Edit</Button>
+                    <div className="flex space-x-2">
+                      <Button size="sm" variant="secondary" onClick={() => handleEditEntry(entry)}>Edit</Button>
+                      <Button size="sm" variant="destructive" onClick={() => handleDeleteEntry(entry.id)}>Delete</Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
