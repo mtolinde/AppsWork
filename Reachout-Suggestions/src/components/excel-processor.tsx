@@ -57,13 +57,6 @@ interface AlertData {
   'PPM Project List': string
 }
 
-interface HeatmapData {
-  name: string
-  opportunitySize: number
-  rank: number
-  weight: number
-}
-
 interface SBE2Data {
   name: string
   inBarGraph: boolean
@@ -181,6 +174,7 @@ export default function ExcelProcessor(): JSX.Element {
   const [overallMedianQuantity, setOverallMedianQuantity] = useState<number | null>(null)
   const [hasTerritoryLookbackData, setHasTerritoryLookbackData] = useState<boolean>(false)
   const [weightData, setWeightData] = useState<{ sbe2: string; weight: number }[]>([])
+  const [isProcessing, setIsProcessing] = useState(false)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
     if (e.target.files && e.target.files[0]) {
@@ -238,6 +232,9 @@ export default function ExcelProcessor(): JSX.Element {
       return
     }
 
+    setIsProcessing(true)
+    setError(null)
+
     try {
       const arrayBuffer = await file.arrayBuffer()
       const workbook = new ExcelJS.Workbook()
@@ -283,19 +280,17 @@ export default function ExcelProcessor(): JSX.Element {
             const cleanHeader = cleanColumnName(header)
             const expectedKey = sheetStructures[sheetName].find(col => cleanColumnName(col) === cleanHeader)
             if (expectedKey) {
-              newRow[expectedKey] = row[index] === undefined ? (percentageColumns.includes(expectedKey as typeof percentageColumns[number]) ? 0 : '0') : row[index]
+              newRow[expectedKey] = row[index] === undefined || row[index] === null || row[index] === '' 
+                ? (percentageColumns.includes(expectedKey as typeof percentageColumns[number]) ? 0 : '0') 
+                : row[index]
             }
           })
-          return  newRow
+          return newRow
         })
       }
 
       setProcessedData(processedSheets)
       setError(null)
-
-      // Extract unique EE options
-      const eeSet = new Set(processedSheets['PPM Accel'].map(row => String(row['EE'])))
-      setEEOptions(Array.from(eeSet))
 
       // Calculate average purchase quantity
       if (processedSheets['Step 6'] && Array.isArray(processedSheets['Step 6'])) {
@@ -332,28 +327,44 @@ export default function ExcelProcessor(): JSX.Element {
     } catch (err) {
       console.error('Error processing Excel file:', err)
       setError(`Error processing the Excel file: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setIsProcessing(false)
     }
   }
 
   useEffect(() => {
-    if (processedData && accountName && selectedEE) {
+    if (processedData && accountName) {
       const filtered: SheetData = {}
       Object.entries(processedData).forEach(([sheetName, data]) => {
         const accountColumn = accountColumns[sheetName as SheetName]
         
-        filtered[sheetName] = data.filter((row) => 
-          String(row[accountColumn]).toLowerCase().includes(accountName.toLowerCase()) &&
-          (sheetName !== 'PPM Accel' || String(row['EE']) === selectedEE)
-        )
+        filtered[sheetName] = data.filter((row) => {
+          const rowAccountName = String(row[accountColumn] || '').toLowerCase()
+          const searchAccountName = accountName.toLowerCase()
+          return rowAccountName.includes(searchAccountName)
+        })
       })
       setFilteredData(filtered)
+
+      // Update EE options based on filtered data
+      const newEEOptions = new Set(filtered['PPM Accel']?.map(row => String(row['EE'] || '')) || []);
+      setEEOptions(Array.from(newEEOptions));
+
+      // Reset selectedEE if it's not in the new options
+      if (selectedEE && !newEEOptions.has(selectedEE)) {
+        setSelectedEE('');
+      }
 
       if (filtered['PPM Accel'] && filtered['Weight']) {
         const newChartData: ChartData[] = filtered['PPM Accel']
           .filter((row) => {
             const aaProjectsID = convertToPercentage(row['AA Projects %ID'])
             const aaProjectWIN = convertToPercentage(row['AA Project %WIN'])
-            return aaProjectsID > 50 && aaProjectWIN > 30
+            return (
+              aaProjectsID > 50 &&
+              aaProjectWIN > 30 &&
+              (selectedEE === '' || String(row['EE']) === selectedEE)
+            )
           })
           .map((row) => ({
             name: String(row['SBE2']),
@@ -365,7 +376,7 @@ export default function ExcelProcessor(): JSX.Element {
         setChartData(newChartData)
 
         if (newChartData.length > 0) {
-          setChartTitle(`SBE2 Performance Chart for ${selectedEE}`)
+          setChartTitle(`SBE2 Performance Chart for ${selectedEE || 'All EEs'}`)
         } else {
           setChartTitle('No data available for chart')
         }
@@ -388,56 +399,60 @@ export default function ExcelProcessor(): JSX.Element {
         })
 
         // Update purchase data with actual quantities
-        filtered['Step 6'].forEach((row) => {
-          const sbe2 = String(row['SBE-2'])
-          if (filteredPurchaseData[sbe2]) {
-            const quantities = {
-              '2022': parseInt(String(row['2022 QTY'])) || 0,
-              '2023': parseInt(String(row['2023 QTY'])) || 0,
-              '2024': parseInt(String(row['2024 QTY'])) || 0,
-              '2025': parseInt(String(row['2025 QTY'])) || 0,
+        filtered['Step 6']
+          .filter(row => selectedEE === '' || String(row['EE']) === selectedEE)
+          .forEach((row) => {
+            const sbe2 = String(row['SBE-2'])
+            if (filteredPurchaseData[sbe2]) {
+              const quantities = {
+                '2022': parseInt(String(row['2022 QTY'])) || 0,
+                '2023': parseInt(String(row['2023 QTY'])) || 0,
+                '2024': parseInt(String(row['2024 QTY'])) || 0,
+                '2025': parseInt(String(row['2025 QTY'])) || 0,
+              }
+              
+              filteredPurchaseData[sbe2].quantities['2022'] += quantities['2022']
+              filteredPurchaseData[sbe2].quantities['2023'] += quantities['2023']
+              filteredPurchaseData[sbe2].quantities['2024'] += quantities['2024']
+              filteredPurchaseData[sbe2].quantities['2025'] += quantities['2025']
+              
+              filteredPurchaseData[sbe2].totalQuantity = 
+                Object.values(filteredPurchaseData[sbe2].quantities).reduce((sum, qty) => sum + qty, 0)
+              filteredPurchaseData[sbe2].isPurchased = filteredPurchaseData[sbe2].totalQuantity > 0
             }
-            
-            filteredPurchaseData[sbe2].quantities['2022'] += quantities['2022']
-            filteredPurchaseData[sbe2].quantities['2023'] += quantities['2023']
-            filteredPurchaseData[sbe2].quantities['2024'] += quantities['2024']
-            filteredPurchaseData[sbe2].quantities['2025'] += quantities['2025']
-            
-            filteredPurchaseData[sbe2].totalQuantity = 
-              Object.values(filteredPurchaseData[sbe2].quantities).reduce((sum, qty) => sum + qty, 0)
-            filteredPurchaseData[sbe2].isPurchased = filteredPurchaseData[sbe2].totalQuantity > 0
-          }
-        })
+          })
 
         // Add Territory Lookback information
         let hasAnyTerritoryLookbackData = false;
         const territoryLookbackCounts: { [key: string]: number } = {};
         const latestActivityDates: { [key: string]: Date } = {};
 
-        filtered['Territory Lookback'].forEach((row) => {
-          const sbe2 = String(row['SBE-2']);
-          const activityDate = parseDate(row['Activity Date']);
-          
-          if (filteredPurchaseData[sbe2]) {
-            territoryLookbackCounts[sbe2] = (territoryLookbackCounts[sbe2] || 0) + 1;
+        filtered['Territory Lookback']
+          .filter(row => selectedEE === '' || String(row['EE']) === selectedEE)
+          .forEach((row) => {
+            const sbe2 = String(row['SBE-2']);
+            const activityDate = parseDate(row['Activity Date']);
             
-            if (activityDate && (!latestActivityDates[sbe2] || activityDate > latestActivityDates[sbe2])) {
-              latestActivityDates[sbe2] = activityDate;
-            }
+            if (filteredPurchaseData[sbe2]) {
+              territoryLookbackCounts[sbe2] = (territoryLookbackCounts[sbe2] || 0) + 1;
+              
+              if (activityDate && (!latestActivityDates[sbe2] || activityDate > latestActivityDates[sbe2])) {
+                latestActivityDates[sbe2] = activityDate;
+              }
 
-            if (!filteredPurchaseData[sbe2].territoryLookback) {
-              filteredPurchaseData[sbe2].territoryLookback = {
-                activityDate: null,
-                contactName: String(row['Contact Name']) || '',
-                email: String(row['Email']) || '',
-                gpn: String(row['GPN']) || '',
-                activityType: String(row['Activity Type']) || '',
-                appearanceCount: 0
-              };
+              if (!filteredPurchaseData[sbe2].territoryLookback) {
+                filteredPurchaseData[sbe2].territoryLookback = {
+                  activityDate: null,
+                  contactName: String(row['Contact Name']) || '',
+                  email: String(row['Email']) || '',
+                  gpn: String(row['GPN']) || '',
+                  activityType: String(row['Activity Type']) || '',
+                  appearanceCount: 0
+                };
+              }
+              hasAnyTerritoryLookbackData = true;
             }
-            hasAnyTerritoryLookbackData = true;
-          }
-        });
+          });
 
         // Update filteredPurchaseData with the latest activity date and appearance count
         Object.keys(filteredPurchaseData).forEach((sbe2) => {
@@ -457,7 +472,7 @@ export default function ExcelProcessor(): JSX.Element {
       setPurchaseData({})
       setHasTerritoryLookbackData(false)
     }
-  }, [processedData, accountName, selectedEE, overallMedianQuantity])
+  }, [processedData, accountName, selectedEE])
 
   const getPurchaseStatusColor = (totalQuantity: number, averageQuantity: number): string => {
     if (totalQuantity === 0) return 'bg-red-100'
@@ -494,7 +509,9 @@ export default function ExcelProcessor(): JSX.Element {
       <div className="mb-4">
         <Input type="file" accept=".xlsx, .xls" onChange={handleFileChange} className="w-full" />
       </div>
-      <Button onClick={processExcel} className="mb-4 bg-black text-white hover:bg-gray-800">Process Excel File</Button>
+      <Button onClick={processExcel} disabled={isProcessing} className="mb-4 bg-black text-white hover:bg-gray-800">
+        {isProcessing ? 'Processing...' : 'Process Excel File'}
+      </Button>
       {processedData && (
         <div className="mb-4 space-y-2">
           <Input
@@ -508,7 +525,7 @@ export default function ExcelProcessor(): JSX.Element {
             <SelectTrigger className="w-full">
               <SelectValue placeholder="Select End Equipment" />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent className="bg-white dark:bg-gray-800">
               {eeOptions.map((ee) => (
                 <SelectItem key={ee} value={ee}>
                   {ee}
