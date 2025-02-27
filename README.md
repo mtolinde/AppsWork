@@ -9,3 +9,6 @@ cd my-org-chart
 
 # Run create-next-app with explicit options
 npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias "@/*" --use-npm
+
+
+npx shadcn@latest add toast
